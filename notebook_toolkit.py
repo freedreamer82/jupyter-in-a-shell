@@ -273,10 +273,6 @@ This version uses execute_interactive() for more reliable execution.
     parser_info = subparsers.add_parser("info", help="Show notebook info")
     parser_info.add_argument("notebook", help="Path to .ipynb file")
 
-    # If no subcommand, fallback to run
-    if len(sys.argv) > 1 and sys.argv[1] not in ("run", "show", "edit", "info", "--help", "-h"):
-        sys.argv.insert(1, "run")
-
     # Parse args before help check to ensure subcommands are registered
     args = parser.parse_args()
 
