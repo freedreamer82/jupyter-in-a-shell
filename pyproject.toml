@@ -1,0 +1,16 @@
+[project]
+name = "jupyter-in-a-shell"
+version = "0.1.0"
+description = "Robust and sequential execution of Jupyter notebooks from the command line."
+authors = [
+    { name="Marco Garzola" }
+]
+readme = "README.md"
+requires-python = ">=3.7"
+dependencies = [
+    "nbformat",
+    "jupyter_client"
+]
+
+[project.scripts]
+jupyter-in-a-shell = "notebook_toolkit:main"
