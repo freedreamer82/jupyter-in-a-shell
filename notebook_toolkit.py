@@ -247,7 +247,7 @@ This version uses execute_interactive() for more reliable execution.
         """,
         add_help=False
     )
-
+    parser.add_argument('-h', '--help', action='help', help='Show this help message and exit')
     subparsers = parser.add_subparsers(dest="command", help="Sub-commands")
 
     # Default run command (no subcommand)
