@@ -10,16 +10,15 @@ from datetime import datetime
 VERSION = "1.0.0"
 AUTHOR = 'SW Engineer Garzola Marco'
 
-def run_notebook_realtime_extended(notebook_path, cell_timeout=3600, output_file=None):
+def run_notebook_realtime_extended(notebook_path, cell_timeout=3600, output_file=None, cell_range=None):
     """
     Executes a Jupyter notebook sequentially and robustly.
-    
     Args:
         notebook_path: Path to the notebook
         cell_timeout: Timeout per cell (0 = no timeout)
         output_file: File to save output (None = console only)
+        cell_range: tuple (start, end) 1-based inclusive, or None for all
     """
-    
     # Setup output file if specified
     output_stream = None
     if output_file:
@@ -39,7 +38,12 @@ def run_notebook_realtime_extended(notebook_path, cell_timeout=3600, output_file
 
     with open(notebook_path, "r", encoding="utf-8") as f:
         nb = nbformat.read(f, as_version=4)
-    
+
+    code_cells = [cell for cell in nb.cells if cell.cell_type == 'code' and cell.source.strip()]
+    if cell_range:
+        start, end = cell_range
+        code_cells = code_cells[start-1:end]
+
     # Configure the kernel manager
     km = KernelManager()
     km.start_kernel()
@@ -52,18 +56,10 @@ def run_notebook_realtime_extended(notebook_path, cell_timeout=3600, output_file
     log("✅ Kernel ready!", output_stream)
     
     try:
-        code_cells = [cell for cell in nb.cells if cell.cell_type == 'code' and cell.source.strip()]
-        
-        for i, cell in enumerate(nb.cells):
-            if cell.cell_type != 'code':
-                continue
-                
+        for i, cell in enumerate(code_cells):
             code = cell.source.strip()
-            if not code:  # Skip empty cells
-                continue
-                
-            cell_num = len([c for c in nb.cells[:i+1] if c.cell_type == 'code' and c.source.strip()])
-            
+            cell_num = i + 1 if not cell_range else cell_range[0] + i
+
             log(f"\n{'='*60}", output_stream)
             log(f"📋 Executing cell {cell_num}/{len(code_cells)}", output_stream)
             log(f"{'='*60}", output_stream)
@@ -223,6 +219,25 @@ def log_raw(message, output_stream=None, end='\n'):
         output_stream.write(message + end)
         output_stream.flush()
 
+def parse_cell_range(cell_range_str, total_cells):
+    """
+    Parse a cell range string like '2-5' or '3' into (start, end)
+    """
+    if not cell_range_str:
+        return None
+    if '-' in cell_range_str:
+        parts = cell_range_str.split('-')
+        try:
+            start = int(parts[0])
+            end = int(parts[1])
+        except Exception:
+            raise ValueError("Invalid cell range format. Use N or N-M (e.g. 2-5)")
+    else:
+        start = end = int(cell_range_str)
+    if start < 1 or end < start or end > total_cells:
+        raise ValueError(f"Cell range out of bounds (1-{total_cells})")
+    return (start, end)
+
 def main():
     import argparse
 
@@ -238,9 +253,9 @@ Examples:
   python run_notebook.py notebook.ipynb
   python run_notebook.py notebook.ipynb --timeout 7200  # 2 hours per cell
   python run_notebook.py notebook.ipynb --timeout 0     # No timeout
-  python run_notebook.py show 2 notebook.ipynb
-  python run_notebook.py show notebook.ipynb
-  python run_notebook.py edit 2 notebook.ipynb
+  python run_notebook.py run notebook.ipynb --cells 2-5
+  python run_notebook.py show --cells 2-5 notebook.ipynb
+  python run_notebook.py edit --cells 2-3 notebook.ipynb
   python run_notebook.py info notebook.ipynb
 
 This version uses execute_interactive() for more reliable execution.
@@ -250,7 +265,7 @@ This version uses execute_interactive() for more reliable execution.
     parser.add_argument('-h', '--help', action='help', help='Show this help message and exit')
     subparsers = parser.add_subparsers(dest="command", help="Sub-commands")
 
-    # Default run command (no subcommand)
+    # Run command
     parser_run = subparsers.add_parser("run", help="Run the notebook (default)")
     parser_run.add_argument("notebook", help="Path to .ipynb file")
     parser_run.add_argument("--timeout", "-t", type=int, default=0,
@@ -258,25 +273,29 @@ This version uses execute_interactive() for more reliable execution.
     parser_run.add_argument("--output", "-o", type=str, default=None,
                             help="File to save output (default: console only)")
     parser_run.add_argument("--debug", action="store_true",
-                                help="Debug mode with more output")
+                            help="Debug mode with more output")
+    parser_run.add_argument("--cells", "-c", type=str, default=None,
+                            help="Range of code cells to execute, e.g. 2-5 or 3 (default: all)")
 
-    # Show command (cell_num is now optional)
+    # Show command
     parser_show = subparsers.add_parser("show", help="Show code of a cell or all code cells")
-    parser_show.add_argument("cell_num", type=int, nargs="?", help="Cell number (1-based, optional)")
     parser_show.add_argument("notebook", help="Path to .ipynb file")
+    parser_show.add_argument("--cells", "-c", type=str, default=None,
+                             help="Range of code cells to show, e.g. 2-5 or 3 (default: all)")
 
     # Edit command
     parser_edit = subparsers.add_parser("edit", help="Edit code of a cell")
-    parser_edit.add_argument("cell_num", type=int, help="Cell number (1-based)")
     parser_edit.add_argument("notebook", help="Path to .ipynb file")
+    parser_edit.add_argument("--cell", type=int, required=True,
+                             help="Edit only the specified code cell (1-based index, required)")
+
+
     # Info command
     parser_info = subparsers.add_parser("info", help="Show notebook info")
     parser_info.add_argument("notebook", help="Path to .ipynb file")
 
-    # Parse args before help check to ensure subcommands are registered
     args = parser.parse_args()
 
-    # Show help with subcommands if requested
     if "--help" in sys.argv or "-h" in sys.argv:
         if len(sys.argv) == 2 and sys.argv[1] in ("--help", "-h"):
             parser.print_help()
@@ -292,17 +311,23 @@ This version uses execute_interactive() for more reliable execution.
         sys.exit(1)
 
     if args.command == "show":
-        # Show a specific code cell or all code cells
         with open(args.notebook, "r", encoding="utf-8") as f:
             nb = nbformat.read(f, as_version=4)
         code_cells = [cell for cell in nb.cells if cell.cell_type == 'code']
-        if args.cell_num is not None:
-            idx = args.cell_num - 1
-            if 0 <= idx < len(code_cells):
-                print(f"\n--- Cell {args.cell_num} ---\n")
-                print(code_cells[idx].source)
-            else:
-                print(f"❌ Cell {args.cell_num} not found (total code cells: {len(code_cells)})")
+        total_code_cells = len(code_cells)
+        cell_range = None
+        if args.cells:
+            try:
+                cell_range = parse_cell_range(args.cells, total_code_cells)
+            except Exception as e:
+                print(f"❌ {e}")
+                sys.exit(1)
+        if cell_range:
+            start, end = cell_range
+            for i in range(start-1, end):
+                print(f"\n--- Cell {i+1} ---\n")
+                print(code_cells[i].source)
+                print("-" * 40)
         else:
             for i, cell in enumerate(code_cells, 1):
                 print(f"\n--- Cell {i} ---\n")
@@ -311,7 +336,6 @@ This version uses execute_interactive() for more reliable execution.
         sys.exit(0)
 
     elif args.command == "info":
-        # Show notebook info
         try:
             stat = os.stat(args.notebook)
             mtime = datetime.fromtimestamp(stat.st_mtime)
@@ -328,54 +352,71 @@ This version uses execute_interactive() for more reliable execution.
         sys.exit(0)
 
     elif args.command == "edit":
-        # Edit the code of the requested cell (opens $EDITOR)
         import tempfile
         import subprocess
 
         with open(args.notebook, "r", encoding="utf-8") as f:
             nb = nbformat.read(f, as_version=4)
         code_cells = [cell for cell in nb.cells if cell.cell_type == 'code']
-        idx = args.cell_num - 1
-        if 0 <= idx < len(code_cells):
-            old_code = code_cells[idx].source
-            print(f"\n--- Editing Cell {args.cell_num} ---\n")
-            with tempfile.NamedTemporaryFile("w+", suffix=".py") as tf:
-                tf.write(old_code)
-                tf.flush()
-                editor = os.environ.get("EDITOR", "nano")
-                subprocess.call([editor, tf.name])
-                tf.seek(0)
-                new_code = tf.read()
-            if new_code != old_code:
-                code_cells[idx].source = new_code
-                with open(args.notebook, "w", encoding="utf-8") as f:
-                    nbformat.write(nb, f)
-                print("✅ Cell updated.")
-            else:
-                print("No changes made.")
+        total_code_cells = len(code_cells)
+        modified = False
+
+        # --cell is now required, so always present
+        idx = args.cell - 1
+        if idx < 0 or idx >= total_code_cells:
+            print(f"❌ Cell {args.cell} not found (total code cells: {total_code_cells})")
+            sys.exit(1)
+        old_code = code_cells[idx].source
+        print(f"\n--- Editing Cell {idx+1} ---\n")
+        with tempfile.NamedTemporaryFile("w+", suffix=".py") as tf:
+            tf.write(old_code)
+            tf.flush()
+            editor = os.environ.get("EDITOR", "nano")
+            subprocess.call([editor, tf.name])
+            tf.seek(0)
+            new_code = tf.read()
+        if new_code != old_code:
+            code_cells[idx].source = new_code
+            modified = True
+            print(f"✅ Cell {idx+1} updated.")
         else:
-            print(f"❌ Cell {args.cell_num} not found (total code cells: {len(code_cells)})")
+            print(f"No changes made to cell {idx+1}.")
+        if modified:
+            with open(args.notebook, "w", encoding="utf-8") as f:
+                nbformat.write(nb, f)
         sys.exit(0)
 
-    else:
-        # Default: run notebook
+    elif args.command == "run":
         output_file = args.output
         timeout = None if args.timeout == 0 else args.timeout
+
+        cell_range = None
+        if args.cells:
+            with open(args.notebook, "r", encoding="utf-8") as f:
+                nb = nbformat.read(f, as_version=4)
+            total_code_cells = len([cell for cell in nb.cells if cell.cell_type == 'code' and cell.source.strip()])
+            try:
+                cell_range = parse_cell_range(args.cells, total_code_cells)
+            except Exception as e:
+                print(f"❌ {e}")
+                sys.exit(1)
 
         start_msg = f"🚀 Starting notebook execution: {args.notebook}"
         timeout_msg = f"⏱️  Cell timeout: {'No limit' if timeout is None else f'{timeout}s'}"
         output_msg = f"📝 Output: {'Console only' if not output_file else f'Console + {output_file}'}"
         mode_msg = f"🔧 Mode: Interactive"
+        cells_msg = f"🔢 Cells: {args.cells if args.cells else 'all'}"
 
         print(start_msg)
         print(timeout_msg)
         print(output_msg)
         print(mode_msg)
+        print(cells_msg)
         print("🔄 Use Ctrl+C to interrupt execution")
         print("📝 Each cell waits for the previous one to complete\n")
 
         try:
-            run_notebook_realtime_extended(args.notebook, timeout, output_file)
+            run_notebook_realtime_extended(args.notebook, timeout, output_file, cell_range)
         except FileNotFoundError:
             msg = f"❌ Error: Notebook file '{args.notebook}' not found"
             if output_file:
@@ -404,4 +445,4 @@ This version uses execute_interactive() for more reliable execution.
                 pass
 
 if __name__ == "__main__":
-    main()            
+    main()
